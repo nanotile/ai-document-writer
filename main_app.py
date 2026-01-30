@@ -85,6 +85,9 @@ class DocumentWriterApp:
             bg=HEADING_COLOR, fg="white",
         ).pack(side=tk.LEFT, padx=15, pady=8)
 
+        # ── Status bar (pack BOTTOM first so it stays at bottom) ──
+        self._build_status_bar()
+
         # ── Main content area ──
         main_frame = tk.Frame(self.root, bg=BG_COLOR)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -98,8 +101,9 @@ class DocumentWriterApp:
         # ── Right sidebar: Actions ──
         self._build_actions(main_frame)
 
-        # ── Status bar ──
-        self._build_status_bar()
+        # ── Bind doc_text events (after all widgets exist) ──
+        self.doc_text.bind("<<Modified>>", self._on_text_modified)
+        self.doc_text.bind("<KeyRelease>", lambda e: self._update_word_count())
 
     def _build_sidebar(self, parent):
         """Build the template selection sidebar."""
@@ -154,6 +158,9 @@ class DocumentWriterApp:
             borderwidth=1,
         )
         self.notes_text.pack(fill=tk.X, pady=(0, 10))
+        self.notes_text.bind("<FocusIn>", self._on_notes_focus_in)
+        self.notes_text.bind("<FocusOut>", self._on_notes_focus_out)
+        self._notes_has_placeholder = False
 
         # ── Generated document output ──
         doc_label = tk.Label(
@@ -276,10 +283,6 @@ class DocumentWriterApp:
         )
         self.word_count_label.pack(side=tk.RIGHT, padx=10)
 
-        # Update word count when document text changes
-        self.doc_text.bind("<<Modified>>", self._on_text_modified)
-        self.doc_text.bind("<KeyRelease>", lambda e: self._update_word_count())
-
     # ── Template Selection ──
 
     def _select_template(self, idx: int):
@@ -296,23 +299,39 @@ class DocumentWriterApp:
 
         # Update notes placeholder if notes area is empty
         current_notes = self.notes_text.get("1.0", tk.END).strip()
-        if not current_notes:
-            self.notes_text.delete("1.0", tk.END)
-            self.notes_text.insert("1.0", template.placeholder)
-            self.notes_text.configure(fg="#999999")
+        if not current_notes or self._notes_has_placeholder:
+            self._show_placeholder(template.placeholder)
 
         self._set_status(f"Template: {template.display_name}")
 
     # ── Notes placeholder behavior ──
 
+    def _show_placeholder(self, text: str):
+        """Show placeholder text in the notes area."""
+        self.notes_text.delete("1.0", tk.END)
+        self.notes_text.insert("1.0", text)
+        self.notes_text.configure(fg="#999999")
+        self._notes_has_placeholder = True
+
+    def _on_notes_focus_in(self, event=None):
+        """Clear placeholder when user clicks into notes area."""
+        if self._notes_has_placeholder:
+            self.notes_text.delete("1.0", tk.END)
+            self.notes_text.configure(fg="black")
+            self._notes_has_placeholder = False
+
+    def _on_notes_focus_out(self, event=None):
+        """Restore placeholder if notes area is empty when focus leaves."""
+        text = self.notes_text.get("1.0", tk.END).strip()
+        if not text:
+            template = TEMPLATES[self.selected_template_idx]
+            self._show_placeholder(template.placeholder)
+
     def _get_notes(self) -> str:
         """Get notes text, ignoring placeholder."""
-        text = self.notes_text.get("1.0", tk.END).strip()
-        # Check if it's still the placeholder
-        template = TEMPLATES[self.selected_template_idx]
-        if text == template.placeholder:
+        if self._notes_has_placeholder:
             return ""
-        return text
+        return self.notes_text.get("1.0", tk.END).strip()
 
     # ── Generate Draft ──
 
@@ -326,17 +345,17 @@ class DocumentWriterApp:
             messagebox.showinfo("No Notes", "Please enter some notes or bullet points first.")
             return
 
-        # Clear placeholder styling
-        self.notes_text.configure(fg="black")
-
         template = TEMPLATES[self.selected_template_idx]
         tone = self.tone_var.get()
 
         self._set_busy(True, f"Generating {template.display_name}...")
 
         def _worker():
-            result = generate_draft(template, notes, tone)
-            self.result_queue.put(("draft", result))
+            try:
+                result = generate_draft(template, notes, tone)
+                self.result_queue.put(("draft", result))
+            except Exception as e:
+                self.result_queue.put(("draft", f"Error generating draft: {e}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -361,8 +380,11 @@ class DocumentWriterApp:
         self._set_busy(True, f"Refining document...")
 
         def _worker():
-            result = refine_text(current_text, instruction, template.name)
-            self.result_queue.put(("draft", result))
+            try:
+                result = refine_text(current_text, instruction, template.name)
+                self.result_queue.put(("draft", result))
+            except Exception as e:
+                self.result_queue.put(("draft", f"Error refining text: {e}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 

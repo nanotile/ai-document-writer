@@ -37,7 +37,7 @@ DRAFTS_DIR = Path.home() / "Documents" / "AI Writer Drafts"
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)
 
 # UI Configuration
-FONT_FAMILY = "Helvetica"
+FONT_FAMILY = "DejaVu Sans"
 FONT_SIZE_NORMAL = 14
 FONT_SIZE_LARGE = 16
 FONT_SIZE_HEADING = 18

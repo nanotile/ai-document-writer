@@ -10,10 +10,11 @@ from templates import get_template_by_name
 @pytest.fixture
 def mock_client():
     """Patch the Anthropic client in ai_writer module."""
-    with patch("ai_writer.client") as mock:
-        mock_response = MagicMock()
-        mock_response.content = [MagicMock(text="Generated document text.")]
-        mock.messages.create.return_value = mock_response
+    mock = MagicMock()
+    mock_response = MagicMock()
+    mock_response.content = [MagicMock(text="Generated document text.")]
+    mock.messages.create.return_value = mock_response
+    with patch("ai_writer._get_client", return_value=mock):
         yield mock
 
 

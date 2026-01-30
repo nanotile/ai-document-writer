@@ -29,8 +29,16 @@ from templates import DocumentTemplate
 
 logger = logging.getLogger(__name__)
 
-# Initialize sync client
-client = Anthropic(api_key=ANTHROPIC_API_KEY)
+# Lazy-initialized sync client (avoids creating with empty key at import time)
+_client = None
+
+
+def _get_client() -> Anthropic:
+    """Get or create the Anthropic client."""
+    global _client
+    if _client is None:
+        _client = Anthropic(api_key=ANTHROPIC_API_KEY)
+    return _client
 
 
 def generate_draft(
@@ -68,7 +76,7 @@ def generate_draft(
     )
 
     try:
-        response = client.messages.create(
+        response = _get_client().messages.create(
             model=CLAUDE_MODEL,
             max_tokens=4096,
             system=system_prompt,
@@ -119,7 +127,7 @@ def refine_text(
     )
 
     try:
-        response = client.messages.create(
+        response = _get_client().messages.create(
             model=CLAUDE_MODEL,
             max_tokens=4096,
             system=system_prompt,

@@ -35,6 +35,39 @@ from config import DRAFTS_DIR
 logger = logging.getLogger(__name__)
 
 
+def _find_font_variant(base_path: str, variant: str) -> Optional[str]:
+    """Find a bold or italic variant of a font file.
+
+    Args:
+        base_path: Path to the regular font file
+        variant: 'Bold' or 'Italic' (or 'BoldItalic')
+
+    Returns:
+        Path to the variant font file, or None if not found
+    """
+    directory = os.path.dirname(base_path)
+    basename = os.path.basename(base_path)
+
+    # Build candidate filenames for common naming conventions
+    # e.g. DejaVuSans.ttf -> DejaVuSans-Bold.ttf
+    # e.g. LiberationSans-Regular.ttf -> LiberationSans-Bold.ttf
+    # e.g. FreeSans.ttf -> FreeSansBold.ttf
+    name, ext = os.path.splitext(basename)
+    candidates = [
+        f"{name}-{variant}{ext}",           # DejaVuSans-Bold.ttf
+        f"{name}{variant}{ext}",            # FreeSansBold.ttf
+    ]
+    # Handle names like LiberationSans-Regular.ttf
+    if "-Regular" in name:
+        candidates.append(name.replace("-Regular", f"-{variant}") + ext)
+
+    for candidate in candidates:
+        path = os.path.join(directory, candidate)
+        if os.path.exists(path):
+            return path
+    return None
+
+
 def _get_unicode_font_path() -> Optional[str]:
     """Find a Unicode-capable TTF font on the system."""
     candidates = [
@@ -63,9 +96,10 @@ class DocumentPDF(FPDF):
         font_path = _get_unicode_font_path()
         if font_path:
             self.add_font("UniSans", "", font_path, uni=True)
-            bold_path = font_path.replace("Sans.ttf", "Sans-Bold.ttf").replace("Regular.ttf", "Bold.ttf")
-            self.add_font("UniSans", "B", bold_path if os.path.exists(bold_path) else font_path, uni=True)
-            self.add_font("UniSans", "I", font_path, uni=True)
+            bold_path = _find_font_variant(font_path, "Bold")
+            self.add_font("UniSans", "B", bold_path if bold_path else font_path, uni=True)
+            italic_path = _find_font_variant(font_path, "Oblique") or _find_font_variant(font_path, "Italic")
+            self.add_font("UniSans", "I", italic_path if italic_path else font_path, uni=True)
             self._font_family = "UniSans"
         else:
             self._font_family = "Helvetica"
@@ -131,7 +165,7 @@ def export_to_pdf(
                 pdf.multi_cell(0, 7, stripped)
                 pdf.ln(2)
             # Lines ending with colon could be sub-headings
-            elif stripped.endswith(':') and len(stripped) < 60 and '\n' not in stripped:
+            elif stripped.endswith(':') and len(stripped) < 60:
                 pdf.ln(2)
                 pdf.set_font(pdf.font_name, "B", 11)
                 pdf.set_text_color(51, 51, 51)
