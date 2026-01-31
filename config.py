@@ -32,6 +32,11 @@ load_dotenv(Path(__file__).parent / ".env")
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
 CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 
+# Web App Configuration
+WEB_PORT = int(os.getenv("WEB_PORT", "8090"))
+WEB_PASSWORD = os.getenv("WEB_PASSWORD", "")
+WEB_SECRET_KEY = os.getenv("WEB_SECRET_KEY", "change-me-in-production")
+
 # Paths
 DRAFTS_DIR = Path.home() / "Documents" / "AI Writer Drafts"
 DRAFTS_DIR.mkdir(parents=True, exist_ok=True)

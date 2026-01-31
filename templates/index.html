@@ -1,0 +1,330 @@
+{% extends "base.html" %}
+
+{% block title %}AI Document Writer{% endblock %}
+
+{% block body %}
+<!-- Header -->
+<div class="app-header">
+    <h1>AI Document Writer</h1>
+    <a href="/logout">Sign Out</a>
+</div>
+
+<!-- 3-Panel Layout -->
+<div class="app-layout">
+
+    <!-- Left Panel: Templates + Tone + Drafts -->
+    <div class="panel-templates">
+        <h2>Templates</h2>
+        {% for t in templates %}
+        <button type="button"
+                class="template-btn{% if t.name == selected_template %} selected{% endif %}"
+                data-name="{{ t.name }}"
+                data-placeholder="{{ t.placeholder | e }}"
+                onclick="selectTemplate(this)">
+            {{ t.display_name }}
+            <span class="template-desc">{{ t.description }}</span>
+        </button>
+        {% endfor %}
+
+        <div class="tone-section">
+            <label for="tone-select">Tone</label>
+            <select id="tone-select" name="tone">
+                {% for tone in tones %}
+                <option value="{{ tone }}">{{ tone }}</option>
+                {% endfor %}
+            </select>
+        </div>
+
+        <div class="drafts-section">
+            <h2>Saved Drafts
+                <span id="load-spinner" class="spinner htmx-indicator" style="vertical-align:middle;"></span>
+            </h2>
+            <div id="draft-list"
+                 hx-get="/drafts"
+                 hx-trigger="load"
+                 hx-indicator="#load-spinner">
+                <div style="font-size:12px; color:#9CA3AF; padding:8px 0;">Loading...</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Center Panel: Notes -->
+    <div class="panel-notes">
+        <h2>Your Notes &amp; Bullet Points</h2>
+        <textarea id="notes-text"
+                  name="notes"
+                  placeholder="{{ templates[0].placeholder }}"></textarea>
+
+        <div class="notes-actions">
+            <button type="button"
+                    class="btn btn-primary"
+                    id="generate-btn"
+                    onclick="generateDraft()">
+                <span id="generate-spinner" class="spinner spinner-white htmx-indicator"></span>
+                Generate Draft
+            </button>
+            <button type="button"
+                    class="btn btn-secondary"
+                    onclick="document.getElementById('notes-text').value = ''">
+                Clear Notes
+            </button>
+        </div>
+    </div>
+
+    <!-- Right Panel: Document -->
+    <div class="panel-document">
+        <h2>
+            Generated Document
+            <span class="word-count" id="word-count">0 words</span>
+        </h2>
+
+        <div id="document-area" style="flex:1; display:flex; flex-direction:column;">
+            <textarea id="document-text"
+                      oninput="updateWordCount()"
+                      placeholder="Your generated document will appear here..."></textarea>
+        </div>
+
+        <div class="document-actions">
+            <input type="text" class="refine-input" id="refine-instruction"
+                   placeholder="Refinement instruction (e.g. make it shorter)">
+            <button type="button"
+                    class="btn btn-primary btn-sm"
+                    id="refine-btn"
+                    onclick="refineDraft()">
+                <span id="refine-spinner" class="spinner spinner-white htmx-indicator"></span>
+                Refine
+            </button>
+            <button type="button"
+                    class="btn btn-success btn-sm"
+                    onclick="showSaveModal()">
+                Save
+            </button>
+            <form method="post" action="/export/pdf" style="display:inline" id="pdf-form">
+                <input type="hidden" name="text" id="pdf-text">
+                <input type="hidden" name="title" id="pdf-title" value="Document">
+                <button type="submit" class="btn btn-secondary btn-sm"
+                        onclick="prepareExport('pdf')">Export PDF</button>
+            </form>
+            <form method="post" action="/export/docx" style="display:inline" id="docx-form">
+                <input type="hidden" name="text" id="docx-text">
+                <input type="hidden" name="title" id="docx-title" value="Document">
+                <button type="submit" class="btn btn-secondary btn-sm"
+                        onclick="prepareExport('docx')">Export DOCX</button>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Save Modal -->
+<div class="modal-overlay" id="save-modal">
+    <div class="modal-card">
+        <h3>Save Draft</h3>
+        <input type="text" id="save-title" placeholder="Draft title">
+        <div class="modal-actions">
+            <button type="button" class="btn btn-secondary" onclick="closeSaveModal()">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveDraft()">
+                <span id="save-spinner" class="spinner spinner-white htmx-indicator"></span>
+                Save
+            </button>
+        </div>
+        <div id="save-result"></div>
+    </div>
+</div>
+
+<!-- Hidden state -->
+<input type="hidden" id="selected-template" value="{{ templates[0].name }}">
+
+<script>
+    /* ── Template selection ────────────────────────── */
+    function selectTemplate(el) {
+        var name = el.getAttribute('data-name');
+        var placeholder = el.getAttribute('data-placeholder');
+        document.getElementById('selected-template').value = name;
+        document.getElementById('notes-text').placeholder = placeholder;
+
+        document.querySelectorAll('.template-btn').forEach(function(btn) {
+            btn.classList.remove('selected');
+        });
+        el.classList.add('selected');
+    }
+
+    /* ── Generate Draft ───────────────────────────── */
+    function generateDraft() {
+        var notes = document.getElementById('notes-text').value;
+        var template = document.getElementById('selected-template').value;
+        var tone = document.getElementById('tone-select').value;
+
+        if (!notes.trim()) {
+            alert('Please enter some notes first.');
+            return;
+        }
+
+        var btn = document.getElementById('generate-btn');
+        btn.classList.add('htmx-request');
+        btn.disabled = true;
+
+        var formData = new FormData();
+        formData.append('template_name', template);
+        formData.append('notes', notes);
+        formData.append('tone', tone);
+
+        htmx.ajax('POST', '/generate', {
+            target: '#document-area',
+            swap: 'innerHTML',
+            values: null
+        });
+
+        fetch('/generate', {
+            method: 'POST',
+            body: formData
+        })
+        .then(function(resp) { return resp.text(); })
+        .then(function(html) {
+            document.getElementById('document-area').innerHTML = html;
+            btn.classList.remove('htmx-request');
+            btn.disabled = false;
+        })
+        .catch(function(err) {
+            document.getElementById('document-area').innerHTML =
+                '<div class="alert alert-error">Network error: ' + err.message + '</div>';
+            btn.classList.remove('htmx-request');
+            btn.disabled = false;
+        });
+    }
+
+    /* ── Refine Draft ─────────────────────────────── */
+    function refineDraft() {
+        var textEl = document.getElementById('document-text');
+        var instruction = document.getElementById('refine-instruction').value;
+
+        if (!textEl || !textEl.value.trim()) {
+            alert('No document to refine. Generate a draft first.');
+            return;
+        }
+        if (!instruction.trim()) {
+            alert('Please enter a refinement instruction.');
+            return;
+        }
+
+        var btn = document.getElementById('refine-btn');
+        btn.classList.add('htmx-request');
+        btn.disabled = true;
+
+        var template = document.getElementById('selected-template').value;
+        var formData = new FormData();
+        formData.append('current_text', textEl.value);
+        formData.append('instruction', instruction);
+        formData.append('template_name', template);
+
+        fetch('/refine', {
+            method: 'POST',
+            body: formData
+        })
+        .then(function(resp) { return resp.text(); })
+        .then(function(html) {
+            document.getElementById('document-area').innerHTML = html;
+            document.getElementById('refine-instruction').value = '';
+            btn.classList.remove('htmx-request');
+            btn.disabled = false;
+        })
+        .catch(function(err) {
+            document.getElementById('document-area').innerHTML =
+                '<div class="alert alert-error">Network error: ' + err.message + '</div>';
+            btn.classList.remove('htmx-request');
+            btn.disabled = false;
+        });
+    }
+
+    /* ── Word Count ───────────────────────────────── */
+    function updateWordCount() {
+        var textEl = document.getElementById('document-text');
+        var count = 0;
+        if (textEl && textEl.value.trim()) {
+            count = textEl.value.trim().split(/\s+/).length;
+        }
+        document.getElementById('word-count').textContent = count + ' word' + (count !== 1 ? 's' : '');
+    }
+
+    /* ── Save Modal ───────────────────────────────── */
+    function showSaveModal() {
+        var textEl = document.getElementById('document-text');
+        if (!textEl || !textEl.value.trim()) {
+            alert('No document to save. Generate a draft first.');
+            return;
+        }
+        document.getElementById('save-modal').classList.add('active');
+        document.getElementById('save-title').focus();
+        document.getElementById('save-result').innerHTML = '';
+    }
+
+    function closeSaveModal() {
+        document.getElementById('save-modal').classList.remove('active');
+    }
+
+    function saveDraft() {
+        var title = document.getElementById('save-title').value.trim();
+        if (!title) {
+            alert('Please enter a title.');
+            return;
+        }
+
+        var formData = new FormData();
+        formData.append('title', title);
+        formData.append('template_name', document.getElementById('selected-template').value);
+        formData.append('tone', document.getElementById('tone-select').value);
+        formData.append('notes', document.getElementById('notes-text').value);
+        formData.append('document_text', document.getElementById('document-text').value);
+
+        fetch('/save', {
+            method: 'POST',
+            body: formData
+        })
+        .then(function(resp) { return resp.text(); })
+        .then(function(html) {
+            document.getElementById('save-result').innerHTML = html;
+            // Refresh draft list
+            htmx.ajax('GET', '/drafts', { target: '#draft-list', swap: 'innerHTML' });
+            setTimeout(closeSaveModal, 1500);
+        })
+        .catch(function(err) {
+            document.getElementById('save-result').innerHTML =
+                '<div class="alert alert-error">Failed to save: ' + err.message + '</div>';
+        });
+    }
+
+    /* ── Export helpers ────────────────────────────── */
+    function prepareExport(type) {
+        var textEl = document.getElementById('document-text');
+        var text = textEl ? textEl.value : '';
+        document.getElementById(type + '-text').value = text;
+        document.getElementById(type + '-title').value =
+            document.getElementById('save-title').value || 'Document';
+    }
+
+    /* ── Load draft callback (called from htmx response) ── */
+    function loadDraftState(data) {
+        // Restore template selection
+        document.getElementById('selected-template').value = data.template_name;
+        document.querySelectorAll('.template-btn').forEach(function(btn) {
+            btn.classList.remove('selected');
+            if (btn.getAttribute('data-name') === data.template_name) {
+                btn.classList.add('selected');
+            }
+        });
+
+        // Restore tone
+        document.getElementById('tone-select').value = data.tone;
+
+        // Restore notes
+        document.getElementById('notes-text').value = data.notes;
+
+        // Word count
+        updateWordCount();
+    }
+
+    /* Close modal on overlay click */
+    document.getElementById('save-modal').addEventListener('click', function(e) {
+        if (e.target === this) closeSaveModal();
+    });
+</script>
+{% endblock %}

@@ -1,0 +1,14 @@
+{% if drafts %}
+    {% for draft in drafts %}
+    <div class="draft-item"
+         hx-post="/load"
+         hx-vals='{"filepath": "{{ draft.filepath }}"}'
+         hx-target="#document-area"
+         hx-indicator="#load-spinner">
+        <div class="draft-title">{{ draft.title }}</div>
+        <div class="draft-date">{{ draft.template_name }} &middot; {{ draft.saved_at[:16] }}</div>
+    </div>
+    {% endfor %}
+{% else %}
+    <div style="font-size:12px; color:#9CA3AF; padding:8px 0;">No saved drafts</div>
+{% endif %}
