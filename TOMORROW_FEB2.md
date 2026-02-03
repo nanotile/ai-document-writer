@@ -1,76 +1,72 @@
-# Session Handoff - January 30, 2026 Morning
-launch the app and test it kb claude code to morrowmorning
-## What Was Built This Session
+# Session Handoff - February 3, 2026
 
-### 1. AI Document Writer (`~/ai-document-writer/`)
-**Status: Code complete, NOT YET TESTED visually**
+## What Was Done This Session
 
-Tkinter desktop app that generates polished documents from rough notes using Claude AI.
+### Security Hardening & Features (commit `2cecebe`)
 
-**Files:**
-| File | Purpose |
-|------|---------|
-| `main_app.py` | Tkinter GUI - three-panel layout (templates, editor, actions) |
-| `ai_writer.py` | Claude API - `generate_draft()` and `refine_text()` |
-| `templates.py` | 8 document templates with system prompts |
-| `export_pdf.py` | PDF export (adapted from deep-research-agent) |
-| `export_docx.py` | Word (.docx) export |
-| `draft_storage.py` | Save/load drafts as JSON to `~/Documents/AI Writer Drafts/` |
-| `config.py` | Settings, fonts, API key loading |
+Implemented the planned robustness improvements for the public-facing app at `https://ai-writer.kentbenson.net`:
 
-**8 Templates:** Formal Letter, Memo, Report, Email Draft, Thank You Note, Meeting Summary, Personal Letter, General Document
+| Feature | Details |
+|---------|---------|
+| **Rate Limiting** | 10 requests/min per IP on all POST/DELETE routes via `slowapi` |
+| **Input Validation** | Max length checks (notes: 10K, title/tone: 200, instruction: 2K chars) |
+| **Error Handling** | Global exception handler logs real errors, returns generic message |
+| **Health Endpoint** | `GET /health` returns `{"status": "ok"}` |
+| **Draft Deletion** | Delete button on drafts (hover to reveal), with path traversal protection |
+| **Session Timeout** | 30-min sliding window (configurable via `WEB_SESSION_TIMEOUT` env var) |
+| **Docs Disabled** | `/docs`, `/redoc`, `/openapi.json` disabled for security |
 
-**Dependencies installed:** anthropic, fpdf2, python-docx, python-dotenv, pydantic
+### Files Changed
+- `pyproject.toml` — added `slowapi` dependency
+- `config.py` — added `WEB_SESSION_TIMEOUT`
+- `web_app.py` — rate limiting, validation, exception handlers, delete route, timeout
+- `draft_storage.py` — added `delete_draft()`, added `filename` to `list_drafts()`
+- `templates/fragments/draft_list.html` — delete button with `hx-delete` + confirmation
+- `static/style.css` — delete button styling (hidden until hover)
 
-**API key:** Already configured in `.env`
-
-### 2. Gmail Assistant (`~/gmail-assistant/`)
-**Status: Code complete, needs Google Cloud Console OAuth setup**
-
-Tkinter desktop app for AI-powered Gmail inbox management.
-
-**Files:** main_app.py, gmail_client.py, ai_assistant.py, email_cache.py, models.py, config.py
-
-**Needs before first run:**
-1. Google Cloud Console project with Gmail API enabled
-2. OAuth 2.0 Desktop Client credentials
-3. Download `credentials.json` to `~/gmail-assistant/`
+### All Tests Passed
+- 54 pytest tests pass
+- `/health` returns `{"status": "ok"}`
+- Rate limiting blocks after 10 requests/min (returns 429)
+- Oversized input returns 400 with error message
+- Draft deletion removes file from disk, refreshes list
+- Session expires after timeout (tested with 5s override)
 
 ---
 
-## What To Do Next (Document Writer)
+## Current Status
 
-### Step 1: Launch and test the app
-Open VS Code terminal (Ctrl + `) and run:
+**App is running** on port 8090 with default 30-min session timeout.
+
 ```bash
+# Check status
+curl http://127.0.0.1:8090/health
+
+# Restart if needed
 cd ~/ai-document-writer
-uv run python main_app.py
+uv run python web_app.py
 ```
-**Must run from VS Code terminal** (not Claude Code) -- Tkinter needs X11 display forwarding.
 
-### Step 2: Test these features
-1. Click different templates on the left sidebar
-2. Type notes in the top text area
-3. Click "Generate Draft" -- should call Claude and display result
-4. Try "Refine" with an instruction like "make it shorter"
-5. Try "Export PDF" and "Export Word"
-6. Try "Save Draft" and "Load Draft"
-
-### Step 3: Known things to watch for
-- The app was built but never launched visually -- UI layout may need tweaks
-- `simpledialog.askstring` is used for Save Draft title -- verify it pops up
-- PDF exports go to `~/Documents/AI Writer Drafts/`
-- If fonts look wrong, adjust sizes in `config.py` (FONT_SIZE_NORMAL, etc.)
+**Public URL:** https://ai-writer.kentbenson.net (via Cloudflare Tunnel)
 
 ---
 
-## Project Locations
-- **Document Writer:** `~/ai-document-writer/` (this directory)
-- **Gmail Assistant:** `~/gmail-assistant/`
-- **Deep Research Agent:** `~/deep-research-agent/` (existing, unchanged)
+## What To Do Next
 
-## How to run (both apps)
-Always from VS Code terminal:
-```bash
-uv run python main_app.py
-```
+The security hardening is complete. Possible next steps:
+
+1. **Use the app** — generate documents, test the delete feature in browser
+2. **Monitor logs** — watch for rate limit hits or errors
+3. **Adjust timeout** — set `WEB_SESSION_TIMEOUT` in `.env` if 30 min is too long/short
+4. **Add more features** — draft renaming, search, categories, etc.
+
+---
+
+## Quick Reference
+
+| Command | Purpose |
+|---------|---------|
+| `uv run python web_app.py` | Start the web app |
+| `uv run pytest` | Run test suite (54 tests) |
+| `curl http://127.0.0.1:8090/health` | Check if app is running |
+| `pkill -f web_app.py` | Stop the app |
