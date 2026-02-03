@@ -1,12 +1,20 @@
 {% if drafts %}
     {% for draft in drafts %}
-    <div class="draft-item"
-         hx-post="/load"
-         hx-vals='{"filepath": "{{ draft.filepath }}"}'
-         hx-target="#document-area"
-         hx-indicator="#load-spinner">
-        <div class="draft-title">{{ draft.title }}</div>
-        <div class="draft-date">{{ draft.template_name }} &middot; {{ draft.saved_at[:16] }}</div>
+    <div class="draft-item">
+        <div class="draft-info"
+             hx-post="/load"
+             hx-vals='{"filepath": "{{ draft.filepath }}"}'
+             hx-target="#document-area"
+             hx-indicator="#load-spinner">
+            <div class="draft-title">{{ draft.title }}</div>
+            <div class="draft-date">{{ draft.template_name }} &middot; {{ draft.saved_at[:16] }}</div>
+        </div>
+        <button class="draft-delete-btn"
+                hx-delete="/drafts/{{ draft.filename }}"
+                hx-confirm="Delete &quot;{{ draft.title }}&quot;?"
+                hx-target="#draft-list"
+                hx-swap="innerHTML"
+                title="Delete draft">&times;</button>
     </div>
     {% endfor %}
 {% else %}

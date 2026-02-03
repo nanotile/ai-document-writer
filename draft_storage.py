@@ -98,6 +98,33 @@ def load_draft(filepath: str) -> Optional[Draft]:
         return None
 
 
+def delete_draft(filename: str) -> bool:
+    """
+    Delete a draft JSON file by filename.
+
+    Applies path traversal protection: only the basename is used and the
+    resolved path must reside inside DRAFTS_DIR.
+
+    Returns:
+        True if deleted, False on error or invalid path
+    """
+    try:
+        safe_name = Path(filename).name
+        filepath = (DRAFTS_DIR / safe_name).resolve()
+        if not str(filepath).startswith(str(DRAFTS_DIR.resolve())):
+            logger.warning(f"Path traversal attempt blocked: {filename}")
+            return False
+        if not filepath.exists() or filepath.suffix != ".json":
+            logger.error(f"Draft not found or not JSON: {safe_name}")
+            return False
+        filepath.unlink()
+        logger.info(f"Draft deleted: {filepath}")
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete draft: {e}")
+        return False
+
+
 def list_drafts() -> list[dict]:
     """
     List all saved drafts, newest first.
@@ -115,6 +142,7 @@ def list_drafts() -> list[dict]:
                     "saved_at": data.get("saved_at", ""),
                     "filepath": str(f),
                     "template_name": data.get("template_name", "general"),
+                    "filename": f.name,
                 })
             except Exception:
                 continue

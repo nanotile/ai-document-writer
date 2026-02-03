@@ -36,6 +36,7 @@ CLAUDE_MODEL = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-20250514")
 WEB_PORT = int(os.getenv("WEB_PORT", "8090"))
 WEB_PASSWORD = os.getenv("WEB_PASSWORD", "")
 WEB_SECRET_KEY = os.getenv("WEB_SECRET_KEY", "change-me-in-production")
+WEB_SESSION_TIMEOUT = int(os.getenv("WEB_SESSION_TIMEOUT", "1800"))  # 30 min default
 
 # Paths
 DRAFTS_DIR = Path.home() / "Documents" / "AI Writer Drafts"

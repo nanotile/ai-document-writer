@@ -1,45 +1,52 @@
 #!/usr/bin/env python3
 """
 Module: FastAPI web application for AI Document Writer
-Version: 1.0.0
-Development Iteration: v1
+Version: 1.1.0
+Development Iteration: v2
 
 Project: AI Document Writer
 Developer: Kent Benson
 Created: 2026-01-31
 
-Enhancement: Web-based UI replacing Tkinter — runs in browser, no X11 needed
+Enhancement: Security hardening (rate limiting, input validation, error handling),
+             draft deletion, session timeout
 
 Features:
 - FastAPI + Jinja2 + htmx web interface
-- Session-based password authentication
+- Session-based password authentication with inactivity timeout
 - Generate and refine documents via Claude API
-- Save/load drafts, export PDF and DOCX
+- Save/load/delete drafts, export PDF and DOCX
 - 3-panel layout: templates | notes | document
+- Rate limiting on all POST/DELETE routes (10/min per IP)
+- Input length validation on all user-submitted fields
 
 UV ENVIRONMENT: Run with `uv run python web_app.py`
 
 INSTALLATION:
-uv add fastapi "uvicorn[standard]" jinja2 python-multipart
+uv add fastapi "uvicorn[standard]" jinja2 python-multipart slowapi
 """
 
 import hmac
 import logging
 import socket
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi import Limiter
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from starlette.middleware.sessions import SessionMiddleware
 
 from ai_writer import generate_draft, refine_text
-from config import DRAFTS_DIR, WEB_PASSWORD, WEB_PORT, WEB_SECRET_KEY
-from draft_storage import list_drafts, load_draft, save_draft
+from config import DRAFTS_DIR, WEB_PASSWORD, WEB_PORT, WEB_SECRET_KEY, WEB_SESSION_TIMEOUT
+from draft_storage import delete_draft, list_drafts, load_draft, save_draft
 from export_docx import export_to_docx
 from export_pdf import export_to_pdf
 from templates import TEMPLATES, TONE_OPTIONS, get_template_by_name
@@ -48,10 +55,29 @@ from templates import TEMPLATES, TONE_OPTIONS, get_template_by_name
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 logger = logging.getLogger(__name__)
 
+# ── Rate Limiter ─────────────────────────────────────────
+
+
+def _get_real_ip(request: Request) -> str:
+    """Get real client IP behind Cloudflare Tunnel (X-Forwarded-For)."""
+    forwarded = request.headers.get("X-Forwarded-For")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return get_remote_address(request)
+
+
+limiter = Limiter(key_func=_get_real_ip)
+
 # ── App Setup ────────────────────────────────────────────
 BASE_DIR = Path(__file__).parent
 
-app = FastAPI(title="AI Document Writer")
+app = FastAPI(
+    title="AI Document Writer",
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
+)
+app.state.limiter = limiter
 app.add_middleware(SessionMiddleware, secret_key=WEB_SECRET_KEY)
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
@@ -59,6 +85,37 @@ tpl = Jinja2Templates(directory=BASE_DIR / "templates")
 
 # Thread pool for blocking API calls
 _executor = ThreadPoolExecutor(max_workers=2)
+
+
+# ── Exception Handlers ───────────────────────────────────
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Rate limit exceeded. Please try again later."},
+    )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "An internal error occurred"},
+    )
+
+
+# ── Input Validation ─────────────────────────────────────
+
+def validate_length(value: str, field_name: str, max_len: int) -> Optional[HTMLResponse]:
+    """Return an error HTMLResponse if value exceeds max_len, else None."""
+    if len(value) > max_len:
+        return HTMLResponse(
+            f'<div class="alert alert-error">{field_name} exceeds maximum length of {max_len} characters.</div>',
+            status_code=400,
+        )
+    return None
 
 
 # ── Auth Helpers ─────────────────────────────────────────
@@ -69,13 +126,27 @@ def is_logged_in(request: Request) -> bool:
 
 
 def require_auth(request: Request) -> Optional[RedirectResponse]:
-    """Return a redirect to /login if not authenticated, else None."""
+    """Return a redirect to /login if not authenticated or session expired, else None."""
     if not WEB_PASSWORD:
         # No password configured — allow access
         return None
     if not is_logged_in(request):
         return RedirectResponse(url="/login", status_code=303)
+    # Check session timeout
+    last_active = request.session.get("last_active", 0)
+    if time.time() - last_active > WEB_SESSION_TIMEOUT:
+        request.session.clear()
+        return RedirectResponse(url="/login", status_code=303)
+    # Sliding window — update timestamp on every authenticated request
+    request.session["last_active"] = time.time()
     return None
+
+
+# ── Routes: Health ───────────────────────────────────────
+
+@app.get("/health")
+async def health():
+    return {"status": "ok"}
 
 
 # ── Routes: Auth ─────────────────────────────────────────
@@ -91,6 +162,7 @@ async def login_page(request: Request):
 async def login_submit(request: Request, password: str = Form(...)):
     if hmac.compare_digest(password, WEB_PASSWORD):
         request.session["authenticated"] = True
+        request.session["last_active"] = time.time()
         return RedirectResponse(url="/", status_code=303)
     return tpl.TemplateResponse("login.html", {"request": request, "error": "Incorrect password"})
 
@@ -119,6 +191,7 @@ async def index(request: Request):
 # ── Routes: Generate & Refine ────────────────────────────
 
 @app.post("/generate", response_class=HTMLResponse)
+@limiter.limit("10/minute")
 async def generate(
     request: Request,
     template_name: str = Form(...),
@@ -128,6 +201,14 @@ async def generate(
     redirect = require_auth(request)
     if redirect:
         return redirect
+
+    for err in [
+        validate_length(template_name, "Template name", 200),
+        validate_length(notes, "Notes", 10_000),
+        validate_length(tone, "Tone", 200),
+    ]:
+        if err:
+            return err
 
     template = get_template_by_name(template_name)
 
@@ -143,6 +224,7 @@ async def generate(
 
 
 @app.post("/refine", response_class=HTMLResponse)
+@limiter.limit("10/minute")
 async def refine(
     request: Request,
     current_text: str = Form(...),
@@ -152,6 +234,14 @@ async def refine(
     redirect = require_auth(request)
     if redirect:
         return redirect
+
+    for err in [
+        validate_length(current_text, "Document text", 10_000),
+        validate_length(instruction, "Instruction", 2_000),
+        validate_length(template_name, "Template name", 200),
+    ]:
+        if err:
+            return err
 
     import asyncio
     loop = asyncio.get_event_loop()
@@ -167,6 +257,7 @@ async def refine(
 # ── Routes: Drafts ───────────────────────────────────────
 
 @app.post("/save", response_class=HTMLResponse)
+@limiter.limit("10/minute")
 async def save(
     request: Request,
     title: str = Form(...),
@@ -179,6 +270,16 @@ async def save(
     if redirect:
         return redirect
 
+    for err in [
+        validate_length(title, "Title", 200),
+        validate_length(template_name, "Template name", 200),
+        validate_length(tone, "Tone", 200),
+        validate_length(notes, "Notes", 10_000),
+        validate_length(document_text, "Document text", 10_000),
+    ]:
+        if err:
+            return err
+
     filepath = save_draft(title, template_name, tone, notes, document_text)
     if filepath:
         return HTMLResponse('<div class="alert alert-success">Draft saved.</div>')
@@ -190,6 +291,23 @@ async def drafts(request: Request):
     redirect = require_auth(request)
     if redirect:
         return redirect
+
+    all_drafts = list_drafts()
+    return tpl.TemplateResponse("fragments/draft_list.html", {
+        "request": request,
+        "drafts": all_drafts,
+    })
+
+
+@app.delete("/drafts/{filename}", response_class=HTMLResponse)
+@limiter.limit("10/minute")
+async def delete_draft_route(request: Request, filename: str):
+    redirect = require_auth(request)
+    if redirect:
+        return redirect
+
+    if not delete_draft(filename):
+        return HTMLResponse('<div class="alert alert-error">Could not delete draft.</div>', status_code=400)
 
     all_drafts = list_drafts()
     return tpl.TemplateResponse("fragments/draft_list.html", {
@@ -242,6 +360,7 @@ def _js_string(s: str) -> str:
 # but allow them from GET requests.
 
 @app.post("/export/pdf")
+@limiter.limit("10/minute")
 async def export_pdf_route(
     request: Request,
     text: str = Form(...),
@@ -250,6 +369,13 @@ async def export_pdf_route(
     redirect = require_auth(request)
     if redirect:
         return redirect
+
+    for err in [
+        validate_length(text, "Document text", 10_000),
+        validate_length(title, "Title", 200),
+    ]:
+        if err:
+            return err
 
     if not text.strip():
         return HTMLResponse('<div class="alert alert-error">No text to export.</div>')
@@ -263,6 +389,7 @@ async def export_pdf_route(
 
 
 @app.post("/export/docx")
+@limiter.limit("10/minute")
 async def export_docx_route(
     request: Request,
     text: str = Form(...),
@@ -271,6 +398,13 @@ async def export_docx_route(
     redirect = require_auth(request)
     if redirect:
         return redirect
+
+    for err in [
+        validate_length(text, "Document text", 10_000),
+        validate_length(title, "Title", 200),
+    ]:
+        if err:
+            return err
 
     if not text.strip():
         return HTMLResponse('<div class="alert alert-error">No text to export.</div>')
@@ -374,5 +508,6 @@ if __name__ == "__main__":
         logger.info("Password authentication enabled")
     else:
         logger.info("No WEB_PASSWORD set — access is open (set WEB_PASSWORD in .env to enable auth)")
+    logger.info(f"Session timeout: {WEB_SESSION_TIMEOUT}s")
 
     uvicorn.run(app, host="0.0.0.0", port=port)
