@@ -38,7 +38,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
 
 from ai_writer import generate_draft, refine_text
-from config import WEB_PASSWORD, WEB_PORT, WEB_SECRET_KEY
+from config import DRAFTS_DIR, WEB_PASSWORD, WEB_PORT, WEB_SECRET_KEY
 from draft_storage import list_drafts, load_draft, save_draft
 from export_docx import export_to_docx
 from export_pdf import export_to_pdf
@@ -237,6 +237,9 @@ def _js_string(s: str) -> str:
 
 
 # ── Routes: Export ───────────────────────────────────────
+# POST generates the file and redirects to a GET download URL.
+# Browsers block file downloads from POST on insecure (HTTP) origins,
+# but allow them from GET requests.
 
 @app.post("/export/pdf")
 async def export_pdf_route(
@@ -255,11 +258,8 @@ async def export_pdf_route(
     if not filepath:
         return HTMLResponse('<div class="alert alert-error">PDF export failed.</div>')
 
-    return FileResponse(
-        filepath,
-        media_type="application/pdf",
-        filename=Path(filepath).name,
-    )
+    filename = Path(filepath).name
+    return RedirectResponse(url=f"/download/{filename}", status_code=303)
 
 
 @app.post("/export/docx")
@@ -279,11 +279,31 @@ async def export_docx_route(
     if not filepath:
         return HTMLResponse('<div class="alert alert-error">DOCX export failed.</div>')
 
-    return FileResponse(
-        filepath,
-        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        filename=Path(filepath).name,
-    )
+    filename = Path(filepath).name
+    return RedirectResponse(url=f"/download/{filename}", status_code=303)
+
+
+@app.get("/download/{filename}")
+async def download_file(request: Request, filename: str):
+    redirect = require_auth(request)
+    if redirect:
+        return redirect
+
+    # Only serve files from the drafts directory (prevent path traversal)
+    safe_name = Path(filename).name
+    filepath = DRAFTS_DIR / safe_name
+    if not filepath.exists():
+        return HTMLResponse('<div class="alert alert-error">File not found.</div>', status_code=404)
+
+    suffix = filepath.suffix.lower()
+    if suffix == ".pdf":
+        media_type = "application/pdf"
+    elif suffix == ".docx":
+        media_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    else:
+        media_type = "application/octet-stream"
+
+    return FileResponse(filepath, media_type=media_type, filename=safe_name)
 
 
 # ── Adaptive Port Detection ─────────────────────────────
